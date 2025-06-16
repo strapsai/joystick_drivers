@@ -81,6 +81,7 @@ private:
   rclcpp::Time publish_soon_time_;
   int coalesce_interval_ms_{0};
   std::string dev_name_;
+  std::string dev_ff_;
   std::thread event_thread_;
   std::shared_future<void> future_;
   std::promise<void> exit_signal_;
