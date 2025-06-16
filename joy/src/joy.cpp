@@ -35,6 +35,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <filesystem>
+
 
 #include <SDL.h>
 
@@ -54,6 +56,8 @@ Joy::Joy(const rclcpp::NodeOptions & options)
   dev_id_ = static_cast<int>(this->declare_parameter("device_id", 0));
 
   dev_name_ = this->declare_parameter("device_name", std::string(""));
+
+  dev_ff_ = this->declare_parameter("dev_ff", std::string(""));
 
   // The user specifies the deadzone to us in the range of 0.0 to 1.0.  Later on
   // we'll convert that to the range of 0 to 32767.  Note also that negatives
@@ -314,6 +318,7 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
     bool matching_device_found = false;
     for (int i = 0; i < num_joysticks; ++i) {
       const char * name = SDL_JoystickNameForIndex(i);
+      RCLCPP_INFO(get_logger(), "Device %d: name: %s", i, name);
       if (name == nullptr) {
         RCLCPP_WARN(get_logger(), "Could not get joystick name: %s", SDL_GetError());
         continue;
@@ -329,6 +334,54 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
       RCLCPP_WARN(
         get_logger(), "Could not get joystick with name %s: %s",
         dev_name_.c_str(), SDL_GetError());
+      return;
+    }
+  }
+  else if (!dev_ff_.empty()) {
+    auto ff_path = std::filesystem::path(dev_ff_);
+    if (std::filesystem::exists(ff_path)){
+      if (std::filesystem::is_symlink(ff_path)){
+        RCLCPP_INFO(get_logger(), "Device path: %s is a symlink.", ff_path.c_str());
+        ff_path = std::filesystem::read_symlink(ff_path);
+        ff_path = std::filesystem::path("/dev/"+ff_path.string());
+        RCLCPP_INFO(get_logger(), "Actual path: %s.", ff_path.c_str());
+      }
+      else 
+        RCLCPP_INFO(get_logger(), "Device path: %s is not a symlink.", ff_path.c_str());
+
+
+
+      int num_joysticks = SDL_NumJoysticks();
+      if (num_joysticks < 0) {
+        RCLCPP_WARN(get_logger(), "Failed to get the number of joysticks: %s", SDL_GetError());
+        return;
+      }
+      bool matching_device_found = false;
+      for (int i = 0; i < num_joysticks; ++i) {
+        const char * file = SDL_JoystickPathForIndex(i);
+        RCLCPP_INFO(get_logger(), "Device %d: path: %s", i, file);
+        if (file == nullptr) {
+          RCLCPP_WARN(get_logger(), "Could not get joystick file: %s", SDL_GetError());
+          continue;
+        }
+        if (std::string(file) == ff_path.string()) {
+          // We found it!
+          matching_device_found = true;
+          dev_id_ = i;
+          break;
+        }
+      }
+      if (!matching_device_found) {
+        RCLCPP_WARN(
+            get_logger(), "Could not get joystick with path %s: %s",
+            ff_path.c_str(), SDL_GetError());
+        return;
+      }
+    }
+    else {
+      RCLCPP_WARN(
+            get_logger(), "Could not get joystick with path %s, the path does not exist: %s",
+            ff_path.c_str(), SDL_GetError());
       return;
     }
   }
