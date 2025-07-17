@@ -133,15 +133,7 @@ Joy::~Joy()
 
 void Joy::feedbackCb(const std::shared_ptr<sensor_msgs::msg::JoyFeedback> msg)
 {
-  if (haptic_ == nullptr) {
-    // No ability to do feedback, so ignore.
-    return;
-  }
 
-  if (msg->type != sensor_msgs::msg::JoyFeedback::TYPE_RUMBLE) {
-    // We only support rumble
-    return;
-  }
 
   if (msg->id != 0) {
     // There can be only one (rumble)
@@ -153,8 +145,31 @@ void Joy::feedbackCb(const std::shared_ptr<sensor_msgs::msg::JoyFeedback> msg)
     return;
   }
 
-  // We purposely ignore the return value; if it fails, what can we do?
-  SDL_HapticRumblePlay(haptic_, msg->intensity, 1000);
+  if (
+      (msg->type == sensor_msgs::msg::JoyFeedback::TYPE_RUMBLE) 
+      || 
+      (msg->type == sensor_msgs::msg::JoyFeedback::TYPE_BUZZER)
+     ){
+    if (haptic_ == nullptr) {
+      // No ability to do feedback, so ignore.
+      return;
+    }
+    // We purposely ignore the return value; if it fails, what can we do?
+    SDL_HapticRumblePlay(haptic_, msg->intensity, 1000);
+  }
+  else if (msg->type == sensor_msgs::msg::JoyFeedback::TYPE_LED){
+    if (SDL_JoystickHasLED(joystick_)){
+        SDL_JoystickSetLED(
+          joystick_,
+          (unsigned char)(255*msg->intensity),
+          (unsigned char)(255*msg->intensity),
+          (unsigned char)(255*msg->intensity)
+          );
+        }
+    else{
+      RCLCPP_WARN(get_logger(), "LED requested, but joystick has no LED!");
+    }
+  }
 }
 
 float Joy::convertRawAxisValueToROS(int16_t val)
@@ -443,6 +458,7 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
   if (haptic_ != nullptr) {
     if (SDL_HapticRumbleInit(haptic_) < 0) {
       // Failed to init haptic.  Clean up haptic_.
+      RCLCPP_INFO(get_logger(), "Failed to initialize haptic (rumble). Cleaning up haptic");
       SDL_HapticClose(haptic_);
       haptic_ = nullptr;
     }
