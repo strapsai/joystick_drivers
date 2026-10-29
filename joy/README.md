@@ -75,3 +75,51 @@ This nodes should work with any joystick or game controller that is supported by
 ## Technical note about interfacing with joysticks and game controllers on Linux
 
 On Linux there are two different ways to interface with a joystick.  The distinction only makes a difference when attempting to pass through the device into a container or virtual machine.  The first interface is via the joystick driver subsystem, which generally shows up as a device in /dev/input/js0 (or other numbers at the end).  This is the way that the "joy_linux" package accesses the joystick.  The second way to interface is through the generic event subsystem, which generally shows up as /dev/input/event7 (or other numbers at the end).  This is the way that SDL (and hence this "joy" package) accesses the joysticks.
+
+## Explicit center calibration (`joy_node`)
+
+`axis_centers` is an optional array of per-axis centers in normalized **SDL raw**
+coordinates (-1 to +1), before the driver's ROS sign inversion and deadzone. Missing
+entries default to zero. Each side is scaled separately around the supplied center,
+so both full-deflection endpoints remain +/-1. Values must be finite and strictly
+between -1 and +1. Only physical axes are calibrated; synthetic hat axes are unchanged.
+This parameter is read at startup; a new calibration takes effect after restarting
+the reader. The existing `deadzone` is applied after centering and must be in [0,1).
+Default empty centers preserve the original conversion. `game_controller_node` is unchanged.
+
+Stop joystick forwarding to any robot before calibrating. The calibration utility
+opens SDL directly and **does not publish ROS messages**:
+
+```bash
+ros2 run joy joy_calibrate.py --list
+ros2 run joy joy_calibrate.py \
+  --device-path /dev/input/by-path/<controller>-event-joystick \
+  --axes 0,1 --duration 3 --output yawman-left.yaml
+ros2 run joy joy_node --ros-args --params-file yawman-left.yaml
+```
+
+For the observed Yawman, physical axes 0/1 are the spring-centered thumbstick.
+SDL reports six physical axes plus one hat; ROS axes 6/7 are synthetic hat values
+and must not be included in physical-axis calibration.
+Do not calibrate throttle or trigger axes as centered sticks. Hold selected axes
+released throughout sampling. The tool rejects a selected axis with more than 0.04
+raw normalized movement or a center offset above 0.25 (both thresholds configurable),
+and aborts on disconnect. It writes zero offsets for all unselected axes and never
+overwrites an existing file. Recheck neutral after several movements/releases;
+a stable biased sample does not prove the operator released the stick.
+
+### Two identical controllers
+
+`device_path` selects the exact SDL device path or a symlink resolving to it, taking
+precedence over `device_name`, the legacy `dev_ff`, and `device_id`. Use the path shown
+by `joy_calibrate.py --list`; on Linux this is generally an input event device. A
+`/dev/input/by-path/...-event-joystick` link is stable for a fixed USB socket/topology.
+It identifies the socket, not the physical unit if controllers are swapped.
+
+Names and GUIDs may be identical between controllers; enumeration indexes can change.
+Serial strings are listed when SDL exposes them, but must be checked for uniqueness.
+A name matching multiple attached devices is rejected instead of choosing the first.
+Use two different paths and two different parameter files, with distinct ROS namespaces
+and topics for two readers. The utility stores the selected device_path in the generated
+file, binding its calibration to that selector. It does not configure a second routing
+pipeline or decide which robot each controller drives.

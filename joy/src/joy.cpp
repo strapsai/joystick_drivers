@@ -46,6 +46,7 @@
 #include <sensor_msgs/msg/joy_feedback.hpp>
 
 #include "joy/joy.hpp"
+#include "joy/axis_calibration.hpp"
 
 namespace joy
 {
@@ -53,29 +54,24 @@ namespace joy
 Joy::Joy(const rclcpp::NodeOptions & options)
 : rclcpp::Node("joy_node", options)
 {
+  dev_path_ = this->declare_parameter("device_path", std::string(""));
+  axis_centers_ = this->declare_parameter("axis_centers", std::vector<double>{});
+  for (double center : axis_centers_) {
+    if (!std::isfinite(center) || std::abs(center) >= 1.0) {
+      throw std::invalid_argument("axis_centers must contain finite values in (-1,1)");
+    }
+  }
   dev_id_ = static_cast<int>(this->declare_parameter("device_id", 0));
 
   dev_name_ = this->declare_parameter("device_name", std::string(""));
 
   dev_ff_ = this->declare_parameter("dev_ff", std::string(""));
 
-  // The user specifies the deadzone to us in the range of 0.0 to 1.0.  Later on
-  // we'll convert that to the range of 0 to 32767.  Note also that negatives
-  // are not allowed, as this is a +/- value.
+  // Apply the deadzone after centering; one would leave no usable axis travel.
   scaled_deadzone_ = this->declare_parameter("deadzone", 0.05);
-  if (scaled_deadzone_ < 0.0 || scaled_deadzone_ > 1.0) {
-    throw std::runtime_error("Deadzone must be between 0.0 and 1.0");
+  if (!std::isfinite(scaled_deadzone_) || scaled_deadzone_ < 0.0 || scaled_deadzone_ >= 1.0) {
+    throw std::runtime_error("Deadzone must be finite and in [0.0, 1.0)");
   }
-  unscaled_deadzone_ = 32767.0 * scaled_deadzone_;
-  // According to the SDL documentation, this always returns a value between
-  // -32768 and 32767.  However, we want to report a value between -1.0 and 1.0,
-  // hence the "scale" dividing by 32767.  Also note that SDL returns the axes
-  // with "forward" and "left" as negative.  This is opposite to the ROS
-  // conventionof "forward" and "left" as positive, so we invert the axes here
-  // as well.  Finally, we take into account the amount of deadzone so we truly
-  // do get value between -1.0 and 1.0 (and not -deadzone to +deadzone).
-  scale_ = static_cast<float>(-1.0 / (1.0 - scaled_deadzone_) / 32767.0);
-
   autorepeat_rate_ = this->declare_parameter("autorepeat_rate", 20.0);
   if (autorepeat_rate_ < 0.0) {
     throw std::runtime_error("Autorepeat rate must be >= 0.0");
@@ -157,30 +153,11 @@ void Joy::feedbackCb(const std::shared_ptr<sensor_msgs::msg::JoyFeedback> msg)
   SDL_HapticRumblePlay(haptic_, msg->intensity, 1000);
 }
 
-float Joy::convertRawAxisValueToROS(int16_t val)
+float Joy::convertRawAxisValueToROS(int16_t val, size_t axis)
 {
-  // SDL reports axis values between -32768 and 32767.  To make sure
-  // we report out scaled value between -1.0 and 1.0, we add one to
-  // the value iff it is exactly -32768.  This makes all of the math
-  // below work properly.
-  if (val == -32768) {
-    val = -32767;
-  }
-
-  // Note that we do all of the math in double space below.  This ensures
-  // that the values stay between -1.0 and 1.0.
-  double double_val = static_cast<double>(val);
-  // Apply the deadzone semantic here.  This allows the deadzone
-  // to be "smooth".
-  if (double_val > unscaled_deadzone_) {
-    double_val -= unscaled_deadzone_;
-  } else if (double_val < -unscaled_deadzone_) {
-    double_val += unscaled_deadzone_;
-  } else {
-    double_val = 0.0;
-  }
-
-  return static_cast<float>(double_val * scale_);
+  const double raw = std::max(-32767, static_cast<int>(val)) / 32767.0;
+  const double center = axis < axis_centers_.size() ? axis_centers_[axis] : 0.0;
+  return static_cast<float>(calibrate_axis(raw, center, scaled_deadzone_));
 }
 
 bool Joy::handleJoyAxis(const SDL_Event & e)
@@ -197,7 +174,7 @@ bool Joy::handleJoyAxis(const SDL_Event & e)
   }
 
   float last_axis_value = joy_msg_.axes.at(e.jaxis.axis);
-  joy_msg_.axes.at(e.jaxis.axis) = convertRawAxisValueToROS(e.jaxis.value);
+  joy_msg_.axes.at(e.jaxis.axis) = convertRawAxisValueToROS(e.jaxis.value, e.jaxis.axis);
   if (last_axis_value != joy_msg_.axes.at(e.jaxis.axis)) {
     if (coalesce_interval_ms_ > 0 && !publish_soon_) {
       publish_soon_ = true;
@@ -309,7 +286,33 @@ bool Joy::handleJoyHatMotion(const SDL_Event & e)
 
 void Joy::handleJoyDeviceAdded(const SDL_Event & e)
 {
-  if (!dev_name_.empty()) {
+  // SDL can emit another device-added event after our selected controller is open.
+  if (joystick_ != nullptr) {
+    return;
+  }
+  if (!dev_path_.empty()) {
+    std::error_code error;
+    const auto wanted = std::filesystem::canonical(dev_path_, error);
+    if (error) {
+      RCLCPP_WARN(get_logger(), "Cannot resolve device_path '%s'", dev_path_.c_str());
+      return;
+    }
+    bool found = false;
+    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+      const char * path = SDL_JoystickPathForIndex(i);
+      if (path == nullptr) {continue;}
+      const auto candidate = std::filesystem::canonical(path, error);
+      if (!error && candidate == wanted) {
+        dev_id_ = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      RCLCPP_WARN(get_logger(), "No SDL joystick matches device_path '%s'", dev_path_.c_str());
+      return;
+    }
+  } else if (!dev_name_.empty()) {
     int num_joysticks = SDL_NumJoysticks();
     if (num_joysticks < 0) {
       RCLCPP_WARN(get_logger(), "Failed to get the number of joysticks: %s", SDL_GetError());
@@ -324,10 +327,13 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
         continue;
       }
       if (std::string(name) == dev_name_) {
-        // We found it!
+        if (matching_device_found) {
+          RCLCPP_ERROR(get_logger(), "Multiple joysticks named '%s'; set device_path",
+            dev_name_.c_str());
+          return;
+        }
         matching_device_found = true;
         dev_id_ = i;
-        break;
       }
     }
     if (!matching_device_found) {
@@ -422,6 +428,12 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
     joystick_ = nullptr;
     return;
   }
+  if (axis_centers_.size() > static_cast<size_t>(num_axes)) {
+    RCLCPP_ERROR(get_logger(), "axis_centers has more entries than this joystick has axes");
+    SDL_JoystickClose(joystick_);
+    joystick_ = nullptr;
+    return;
+  }
   int num_hats = SDL_JoystickNumHats(joystick_);
   if (num_hats < 0) {
     RCLCPP_WARN(get_logger(), "Failed to get number of hats: %s", SDL_GetError());
@@ -435,7 +447,7 @@ void Joy::handleJoyDeviceAdded(const SDL_Event & e)
   for (int i = 0; i < num_axes; ++i) {
     int16_t state;
     if (SDL_JoystickGetAxisInitialState(joystick_, i, &state)) {
-      joy_msg_.axes.at(i) = convertRawAxisValueToROS(state);
+      joy_msg_.axes.at(i) = convertRawAxisValueToROS(state, i);
     }
   }
 

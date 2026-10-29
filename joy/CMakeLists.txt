@@ -75,7 +75,19 @@ ament_export_dependencies(
   "sdl2_vendor"
   "sdl2_custom")
 
+install(PROGRAMS scripts/joy_calibrate.py DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME test_calibrate_tool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibrate_tool.py)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_calibrated_node test/test_calibrated_node.cpp)
+  target_include_directories(test_calibrated_node PRIVATE include)
+  target_link_libraries(test_calibrated_node joy SDL2::SDL2)
+  ament_target_dependencies(test_calibrated_node rclcpp sensor_msgs)
+  ament_add_gtest(test_axis_calibration test/test_axis_calibration.cpp)
+  target_include_directories(test_axis_calibration PRIVATE include)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
