@@ -36,6 +36,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joy.hpp>
@@ -63,7 +64,7 @@ private:
   bool handleJoyHatMotion(const SDL_Event & e);
   void handleJoyDeviceAdded(const SDL_Event & e);
   void handleJoyDeviceRemoved(const SDL_Event & e);
-  float convertRawAxisValueToROS(int16_t val);
+  float convertRawAxisValueToROS(int16_t val, size_t axis);
   void feedbackCb(const std::shared_ptr<sensor_msgs::msg::JoyFeedback> msg);
 
   int dev_id_{0};
@@ -72,14 +73,14 @@ private:
   SDL_Haptic * haptic_{nullptr};
   int32_t joystick_instance_id_{0};
   double scaled_deadzone_{0.0};
-  double unscaled_deadzone_{0.0};
-  double scale_{0.0};
   double autorepeat_rate_{0.0};
   int autorepeat_interval_ms_{0};
   bool sticky_buttons_{false};
   bool publish_soon_{false};
   rclcpp::Time publish_soon_time_;
   int coalesce_interval_ms_{0};
+  std::vector<double> axis_centers_;
+  std::string dev_path_;
   std::string dev_name_;
   std::string dev_ff_;
   std::thread event_thread_;
